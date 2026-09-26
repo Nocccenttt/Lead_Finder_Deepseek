@@ -1,0 +1,59 @@
+# ==========================
+# Secrets
+# ==========================
+
+.env
+
+
+# ==========================
+# Python
+# ==========================
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+
+# ==========================
+# Logs
+# ==========================
+
+logs/
+
+
+# ==========================
+# LeadFinder Generated Data
+# ==========================
+
+outputs/
+
+
+# ==========================
+# Generated Websites
+# ==========================
+
+codex_handoffs/**/website/
+
+
+# ==========================
+# Generated AI Reports
+# ==========================
+
+codex_handoffs/**/quality_report.json
+
+
+# ==========================
+# Temporary Testing
+# ==========================
+
+codex_handoffs/TEST/
+
+# Batch execution logs
+batch_runs/
+
+# Client runtime status files
+codex_handoffs/**/STATUS.json
+
+# Generated client handoffs
+codex_handoffs/
