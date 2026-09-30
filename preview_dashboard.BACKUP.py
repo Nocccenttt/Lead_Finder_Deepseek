@@ -1,6 +1,5 @@
 import csv
 import json
-import socket
 from pathlib import Path
 from threading import Lock, Thread
 from time import time
@@ -17,22 +16,6 @@ load_dotenv()
 app = Flask(__name__)
 ROOT = Path(__file__).resolve().parent
 HANDOFFS = ROOT / "codex_handoffs"
-
-
-def get_lan_ip():
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-        sock.close()
-        return ip
-    except OSError:
-        return ""
-
-
-LAN_IP = get_lan_ip()
-LAN_URL = f"http://{LAN_IP}:3000" if LAN_IP else ""
-
 
 jobs = {}
 jobs_lock = Lock()
@@ -54,7 +37,6 @@ button,input,select{font:inherit}button{cursor:pointer}
 .header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:24px}
 .brand{font-size:27px;font-weight:900;letter-spacing:2px}.subtitle{color:var(--muted);margin-top:5px}
 .live{display:flex;align-items:center;gap:8px;color:var(--green);font-size:13px;font-weight:800}.live-dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
-.header-status{display:flex;flex-direction:column;align-items:flex-end;gap:7px}.network-url{font-size:12px;color:var(--muted);font-weight:700}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:22px;margin-bottom:18px}
 .panel-title{font-size:17px;font-weight:800;margin-bottom:18px}
 .form{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) 150px 190px;gap:12px}
@@ -86,20 +68,8 @@ input:focus,select:focus{border-color:var(--gold)}
 <body>
 <div class="app">
 <header class="header">
-<div>
-<div class="brand">LEADFINDER</div>
-<div class="subtitle">Lead Generation & Sales Control Center</div>
-</div>
-
-<div class="header-status">
-<div class="live">
-<span class="live-dot"></span> LIVE
-</div>
-
-<div id="network-url" class="network-url">
-Detecting network address...
-</div>
-</div>
+<div><div class="brand">LEADFINDER</div><div class="subtitle">Lead Generation & Sales Control Center</div></div>
+<div class="live"><span class="live-dot"></span> LIVE</div>
 </header>
 
 <section class="panel">
@@ -380,22 +350,6 @@ $("wipe").addEventListener("click",async()=>{
     $("demo-panel").style.display="none";
     await loadLeads();
 });
-async function loadNetworkInfo(){
-    try{
-        const response=await fetch("/network-info");
-        const data=await response.json();
-
-        if(data.lan_url){
-            $("network-url").textContent="Network: "+data.lan_url;
-        }else{
-            $("network-url").textContent="Network address unavailable";
-        }
-    }catch(error){
-        $("network-url").textContent="Network address unavailable";
-    }
-}
-
-loadNetworkInfo();
 loadLeads();
 </script>
 </body>
@@ -517,15 +471,6 @@ def run_generation(job_id, niche, area, max_results):
         )
 
 
-@app.get("/network-info")
-def network_info():
-    return jsonify({
-        "local_url": "http://127.0.0.1:3000",
-        "lan_url": LAN_URL,
-        "lan_ip": LAN_IP,
-    })
-
-
 @app.get("/")
 def home():
     return render_template_string(HTML)
@@ -573,67 +518,12 @@ def leads():
 
 def resolve_client(priority, name):
     priority = str(priority or "").upper()
-
-    if priority not in ("HIGH", "MEDIUM", "LOW"):
+    if priority not in ("HIGH", "MEDIUM"):
         return None
-
     folder = HANDOFFS / priority / str(name)
-
-    if not folder.is_dir():
-        return None
-
-    handoff = folder / "AI_HANDOFF.json"
-
-    if not handoff.exists():
-        business_file = folder / "business.json"
-
-        if not business_file.exists():
-            return None
-
-        try:
-            business = json.loads(
-                business_file.read_text(encoding="utf-8")
-            )
-
-            handoff_data = {
-                "business_name": business.get("business_name", name),
-                "location": business.get("address", ""),
-                "phone": business.get("phone", ""),
-                "website": business.get("website", ""),
-                "website_status": business.get("website_status", ""),
-                "website_quality": business.get("website_quality", ""),
-                "opportunity_score": business.get("opportunity_score", 0),
-                "opportunity": business.get("opportunity", priority),
-                "reasons": [
-                    r.strip()
-                    for r in str(
-                        business.get("opportunity_reasons", "")
-                    ).split(";")
-                    if r.strip()
-                ],
-                "socials": {
-                    "facebook": business.get("facebook", ""),
-                    "instagram": business.get("instagram", ""),
-                    "linkedin": business.get("linkedin", ""),
-                    "other": [],
-                },
-                "email": business.get("email", ""),
-                "email_source_url": business.get("email_found_on", ""),
-                "website_build": {
-                    "create_new_site": True,
-                    "goal": "modern, mobile-friendly, conversion-focused local business website",
-                },
-            }
-
-            handoff.write_text(
-                json.dumps(handoff_data, indent=2),
-                encoding="utf-8",
-            )
-
-        except Exception:
-            return None
-
-    return folder
+    if folder.is_dir() and (folder / "AI_HANDOFF.json").exists():
+        return folder
+    return None
 
 
 def run_landing_page(job_id, client_folder):

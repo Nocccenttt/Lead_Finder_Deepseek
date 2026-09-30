@@ -3,6 +3,7 @@ import json
 import os
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -730,7 +731,7 @@ def get_business_name(business, handoff):
         or handoff.get("business_name")
         or handoff.get("business", {}).get("business_name")
         or handoff.get("business", {}).get("name")
-        or "Local Business"
+        or "Local Junk Removal"
     )
 
 
@@ -746,101 +747,10 @@ def get_niche(business, handoff):
     )
 
 
-def write_image_fallback(path, label):
-    """Create a tiny local SVG fallback so the layout never has a broken image."""
-    label = escape(str(label or "Local Business"))
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000">
-<rect width="1600" height="1000" fill="#0d1b2e"/>
-<circle cx="1280" cy="250" r="280" fill="#13243a"/>
-<circle cx="1280" cy="250" r="180" fill="#1b314d"/>
-<text x="120" y="470" fill="#d7b56d" font-family="Arial,Helvetica,sans-serif"
-      font-size="34" font-weight="700" letter-spacing="5">{label.upper()}</text>
-<text x="120" y="530" fill="#f7f9fc" font-family="Arial,Helvetica,sans-serif"
-      font-size="58" font-weight="700">Professional Local Service</text>
-</svg>"""
-    path.write_text(svg, encoding="utf-8")
-    return path.name
-
-
-def download_stock_image(query, output_dir, filename):
-    """
-    Search Pexels and download one niche-matched photo locally.
-
-    The finished website references the downloaded local file only.
-    Falls back to a local SVG if the API key, search, or download fails.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        import requests
-
-        api_key = os.getenv("PEXELS_API_KEY")
-        if not api_key:
-            raise RuntimeError("PEXELS_API_KEY is not configured")
-
-        query = str(query or "").strip() or "professional local business"
-
-        search = requests.get(
-            "https://api.pexels.com/v1/search",
-            headers={"Authorization": api_key},
-            params={
-                "query": query,
-                "per_page": 1,
-                "orientation": "landscape",
-            },
-            timeout=20,
-        )
-        search.raise_for_status()
-
-        data = search.json()
-        photos = data.get("photos") or []
-        if not photos:
-            raise RuntimeError("Pexels returned no matching photos")
-
-        photo = photos[0]
-        image_url = (
-            photo.get("src", {}).get("large2x")
-            or photo.get("src", {}).get("large")
-            or photo.get("src", {}).get("original")
-        )
-        if not image_url:
-            raise RuntimeError("Pexels result did not contain a usable image URL")
-
-        image = requests.get(
-            image_url,
-            timeout=30,
-            headers={"User-Agent": "LeadFinder/1.0"},
-            allow_redirects=True,
-        )
-        image.raise_for_status()
-
-        content = image.content
-        content_type = image.headers.get("Content-Type", "").lower()
-        if not content or len(content) < 10_000:
-            raise RuntimeError("Downloaded image was empty or unexpectedly small")
-
-        extension = ".jpg"
-        if "png" in content_type:
-            extension = ".png"
-        elif "webp" in content_type:
-            extension = ".webp"
-
-        target = output_dir / f"{filename}{extension}"
-        target.write_bytes(content)
-
-        photographer = photo.get("photographer") or "Pexels"
-        print(f"[image] Pexels: {query} -> {photographer}")
-        print(f"[image] Saved: {target}")
-        return target.name
-
-    except Exception as error:
-        fallback = output_dir / f"{filename}.svg"
-        write_image_fallback(fallback, query)
-        print(f"[image] Pexels failed for '{query}': {error}")
-        print(f"[image] Using local fallback: {fallback}")
-        return fallback.name
-
+def stock_image_url(query, width=1600, height=1000):
+    """Return a niche-matched stock-photo URL without requiring another API key."""
+    query = str(query or "").strip() or "professional local business"
+    return f"https://loremflickr.com/{width}/{height}/{quote(query, safe=',-')}"
 
 
 def phone_link(phone):
@@ -922,7 +832,7 @@ def generate_copy(business, handoff):
         )
 
 
-def build_html(business, copy, niche, output_dir, handoff=None):
+def build_html(business, copy, niche, handoff=None):
     name = get_business_name(business, {})
 
     phone = business.get("phone", "")
@@ -941,21 +851,8 @@ def build_html(business, copy, niche, output_dir, handoff=None):
     image_alt = [str(x).strip() for x in image_alt if str(x).strip()]
     image_alt = (image_alt + [f"Professional {niche} service", f"Local {niche} business"])[:2]
 
-    images_dir = Path(output_dir) / "images"
-
-    hero_image = download_stock_image(
-        image_queries[0],
-        images_dir,
-        "hero",
-    )
-    secondary_image = download_stock_image(
-        image_queries[1],
-        images_dir,
-        "secondary",
-    )
-
-    hero_image = f"images/{hero_image}"
-    secondary_image = f"images/{secondary_image}"
+    hero_image = stock_image_url(image_queries[0])
+    secondary_image = stock_image_url(image_queries[1])
 
     niche_label = escape(str(niche)).upper()
     niche_title = escape(str(niche))
@@ -1373,7 +1270,7 @@ def build_html(business, copy, niche, output_dir, handoff=None):
                 loading="lazy"
             >
             <figcaption>
-                Professional {niche_title} photography.
+                Stock photography selected for the {niche_title} niche.
             </figcaption>
         </figure>
 
@@ -1457,7 +1354,7 @@ def build_html(business, copy, niche, output_dir, handoff=None):
             </span>
 
             <h2>
-                Service Built Around Your Needs
+                A Cleaner Space Starts Here
             </h2>
 
         </div>
@@ -1485,7 +1382,7 @@ def build_html(business, copy, niche, output_dir, handoff=None):
             </span>
 
             <h2>
-                Simple Steps. Clear Process.
+                Simple Steps. Less Clutter.
             </h2>
 
         </div>
@@ -1663,20 +1560,19 @@ def generate_website(handoff_path):
         handoff,
     )
 
+    html = build_html(
+        business,
+        copy,
+        niche,
+        handoff,
+    )
+
     output_dir = (
         handoff_path.parent / "website"
     )
 
     output_dir.mkdir(
         exist_ok=True
-    )
-
-    html = build_html(
-        business,
-        copy,
-        niche,
-        output_dir,
-        handoff,
     )
 
     (output_dir / "index.html").write_text(
@@ -1726,8 +1622,6 @@ Recommended widgets:
 - Google Maps when appropriate
 
 Do not add unsupported business claims.
-
-Images are generated as local files in `images/` for the concept build.
 """,
         encoding="utf-8",
     )
