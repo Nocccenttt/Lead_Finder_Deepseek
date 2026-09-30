@@ -92,6 +92,27 @@ Return ONLY valid JSON with exactly this structure. Keep every text field concis
       "background": "",
       "text": ""
     },
+    "design_system": {
+      "palette": {
+        "background": "",
+        "surface": "",
+        "surface_alt": "",
+        "text": "",
+        "muted": "",
+        "primary": "",
+        "accent": "",
+        "dark": "",
+        "on_primary": ""
+      },
+      "spacing": "",
+      "container": "",
+      "section_tone": "",
+      "dark_sections": [],
+      "motion": "",
+      "radius": "",
+      "shadow": ""
+    },
+    "reference_patterns": [],
     "typography_style": "",
     "card_style": "",
     "button_style": "",
@@ -151,6 +172,16 @@ DESIGN RULES:
 - Do not force every business into the same visual language. Select only reference patterns that fit
   the business, niche, local audience, and conversion goal.
 - Favor a small number of coherent design traits over a collection of unrelated effects.
+- Build one coherent design_system that the renderer can apply globally; do not choose colors independently
+  for each section.
+- design_system.palette must use valid 6-digit hex colors. Keep text/background contrast strong.
+- surface should support normal content, surface_alt should support cards, dark should be reserved for
+  intentional contrast sections, and on_primary must be readable on primary buttons.
+- dark_sections may contain only section keys from section_order and should normally contain no more than 2.
+- spacing should be one of compact, comfortable, or spacious; container should be focused or wide.
+- motion should describe subtle CSS/IntersectionObserver motion only; avoid distracting effects.
+- reference_patterns should list 2-4 concise traits selected from the supplied inspiration brief that materially
+  influenced this design. Do not name a reference as the design itself and do not copy its composition.
 
 CONTENT RULES:
 - Write for the verified niche, not a hardcoded industry.
@@ -796,20 +827,56 @@ details p {
 
 
 JS = r"""
+document.documentElement.classList.add("js-enabled");
+
+var menuButton = document.querySelector(".menu-toggle");
+var siteMenu = document.querySelector(".site-nav");
+
+if (menuButton && siteMenu) {
+    menuButton.addEventListener("click", function () {
+        var open = siteMenu.classList.toggle("is-open");
+        menuButton.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+
+    siteMenu.querySelectorAll("a").forEach(function (link) {
+        link.addEventListener("click", function () {
+            siteMenu.classList.remove("is-open");
+            menuButton.setAttribute("aria-expanded", "false");
+        });
+    });
+}
+
 document.querySelectorAll('a[href^="#"]').forEach(function (link) {
     link.addEventListener("click", function () {
-        var target = document.querySelector(
-            link.getAttribute("href")
-        );
-
-        if (target) {
-            target.scrollIntoView({
-                behavior: "smooth"
-            });
-        }
+        var target = document.querySelector(link.getAttribute("href"));
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
     });
 });
+
+var revealItems = document.querySelectorAll(
+    ".rendered-main > section, .service-card, .benefit-card, .process-card, details, .cta-box"
+);
+
+revealItems.forEach(function (item, index) {
+    item.classList.add("reveal");
+    item.style.transitionDelay = Math.min(index * 45, 270) + "ms";
+});
+
+if ("IntersectionObserver" in window) {
+    var observer = new IntersectionObserver(function (entries, obs) {
+        entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+                entry.target.classList.add("is-visible");
+                obs.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.12 });
+    revealItems.forEach(function (item) { observer.observe(item); });
+} else {
+    revealItems.forEach(function (item) { item.classList.add("is-visible"); });
+}
 """
+
 
 
 def load_json(path):
@@ -1082,6 +1149,8 @@ def generate_copy(business, handoff):
         "hero_style",
         "navigation_style",
         "color_direction",
+        "design_system",
+        "reference_patterns",
         "typography_style",
         "card_style",
         "button_style",
@@ -1128,6 +1197,29 @@ def generate_copy(business, handoff):
             "DeepSeek returned incomplete design colors. "
             f"Missing: {', '.join(missing_colors)}"
         )
+
+    system = design.get("design_system")
+    if not isinstance(system, dict):
+        raise RuntimeError("DeepSeek returned an invalid design_system.")
+
+    palette = system.get("palette")
+    if not isinstance(palette, dict):
+        raise RuntimeError("DeepSeek returned an invalid design_system palette.")
+
+    required_palette = [
+        "background", "surface", "surface_alt", "text", "muted",
+        "primary", "accent", "dark", "on_primary",
+    ]
+    missing_palette = [key for key in required_palette if not palette.get(key)]
+    if missing_palette:
+        raise RuntimeError(
+            "DeepSeek returned incomplete design_system colors. "
+            f"Missing: {', '.join(missing_palette)}"
+        )
+
+    dark_sections = system.get("dark_sections", [])
+    if not isinstance(dark_sections, list):
+        raise RuntimeError("DeepSeek returned an invalid dark_sections list.")
 
     if design.get("elementor_compatible") is not True:
         raise RuntimeError(
@@ -1188,87 +1280,210 @@ def filter_services(copy_services, verified_services):
 
 
 
+
 def build_design_css(design):
-    """Translate the AI design spec into deterministic Elementor-friendly CSS."""
-    direction=str(design.get("direction", "")).lower()
-    hero=str(design.get("hero_style", "")).lower()
-    navigation=str(design.get("navigation_style", "")).lower()
-    typography=str(design.get("typography_style", "")).lower()
-    cards=str(design.get("card_style", "")).lower()
-    buttons=str(design.get("button_style", "")).lower()
+    """Translate the AI design system into one coherent renderer theme."""
+    colors = design.get("color_direction", {})
+    system = design.get("design_system", {})
+    palette = system.get("palette", {}) if isinstance(system, dict) else {}
+    if not isinstance(colors, dict):
+        colors = {}
+    if not isinstance(palette, dict):
+        palette = {}
 
-    order_map={
-        "hero":10, "intro":20, "image feature":25, "services":30,
-        "about":40, "benefits":50, "process":60, "local":70,
-        "faq":80, "cta":90,
-    }
-    order_rules=[]
-    for section in design.get("section_order", []):
-        key=str(section).strip().lower()
-        if key in order_map:
-            order_rules.append(
-                f'main.rendered-main > [data-section="{key}"] {{order:{order_map[key]};}}'
-            )
+    def safe_color(value, fallback):
+        value = str(value or "").strip()
+        if (len(value) == 7 and value.startswith("#") and
+                all(char in "0123456789abcdefABCDEF" for char in value[1:])):
+            return value
+        return fallback
 
-    hero_rules=[]
-    if any(x in hero for x in ("full-bleed", "full width", "background image")):
-        hero_rules += [
-            '[data-hero-mode="full-bleed"] .hero-grid{position:static;grid-template-columns:1fr;}',
-            '[data-hero-mode="full-bleed"] .hero-visual{position:absolute;inset:0;min-height:100%;}',
-            '[data-hero-mode="full-bleed"] .hero-photo{position:absolute;inset:0;border:0;border-radius:0;}',
-            '[data-hero-mode="full-bleed"] .hero-photo::after{background:rgba(0,0,0,.48);}',
-            '[data-hero-mode="full-bleed"] .hero-content{z-index:2;max-width:820px;}',
-        ]
-    elif any(x in hero for x in ("offset", "overlap", "panel")):
-        hero_rules += [
-            '[data-hero-mode="offset"] .hero-content{padding:42px;background:var(--card);border:1px solid var(--border);}',
-            '[data-hero-mode="offset"] .hero-visual{margin-left:-55px;z-index:2;}',
-        ]
+    background = safe_color(palette.get("background"), safe_color(colors.get("background"), "#f6f3ec"))
+    surface = safe_color(palette.get("surface"), background)
+    surface_alt = safe_color(palette.get("surface_alt"), "#ffffff")
+    text = safe_color(palette.get("text"), safe_color(colors.get("text"), "#172019"))
+    muted = safe_color(palette.get("muted"), "#667066")
+    primary = safe_color(palette.get("primary"), safe_color(colors.get("primary"), "#214b35"))
+    accent = safe_color(palette.get("accent"), safe_color(colors.get("accent"), "#b88a45"))
+    dark = safe_color(palette.get("dark"), "#101c18")
+    on_primary = safe_color(palette.get("on_primary"), "#ffffff")
 
-    if "serif" in typography or "editorial" in typography:
-        type_rule=".design-typography h1,.design-typography h2,.design-typography h3{font-family:Georgia,'Times New Roman',serif;letter-spacing:-.035em;}"
+    typography = str(design.get("typography_style", "")).lower()
+    heading_font = (
+        "Georgia, 'Times New Roman', serif"
+        if any(word in typography for word in ("serif", "editorial", "classic", "luxury"))
+        else "Arial, Helvetica, sans-serif"
+    )
+    body_font = (
+        "Trebuchet MS, Arial, sans-serif"
+        if any(word in typography for word in ("humanist", "warm", "organic"))
+        else "Arial, Helvetica, sans-serif"
+    )
+
+    spacing = str(system.get("spacing", "comfortable")).lower()
+    if spacing == "compact":
+        section_space = "clamp(64px, 7vw, 92px)"
+        intro_space = "clamp(58px, 6vw, 82px)"
+    elif spacing == "spacious":
+        section_space = "clamp(82px, 9vw, 138px)"
+        intro_space = "clamp(72px, 8vw, 112px)"
     else:
-        type_rule=".design-typography h1,.design-typography h2,.design-typography h3{font-family:Inter,Arial,Helvetica,sans-serif;}"
+        section_space = "clamp(72px, 8vw, 112px)"
+        intro_space = "clamp(64px, 7vw, 96px)"
 
-    if "flat" in cards or "1px border" in cards:
-        card_rule=".design-cards .service-card,.design-cards .benefit-card,.design-cards .process-card,.design-cards details{border-radius:6px;box-shadow:none;}"
-    elif "shadow" in cards:
-        card_rule=".design-cards .service-card,.design-cards .benefit-card,.design-cards .process-card{box-shadow:0 24px 60px rgba(0,0,0,.18);}"
-    else:
-        card_rule=""
+    container = str(system.get("container", "wide")).lower()
+    max_width = "1240px" if container == "wide" else "1080px"
+    radius = str(system.get("radius", "medium")).lower()
+    radius_value = {"small": "8px", "large": "24px"}.get(radius, "16px")
+    shadow = str(system.get("shadow", "soft")).lower()
+    shadow_value = "none" if shadow in ("none", "flat") else "0 18px 50px rgba(20,30,24,.10)"
 
-    radius="4px" if "4px" in buttons else "999px" if "pill" in buttons else "7px"
-    nav_rule=".design-nav .header{position:sticky;top:0;}" if "sticky" in navigation else ".design-nav .header{position:relative;}"
+    return f"""
+:root {{
+    --bg: {background};
+    --surface: {surface};
+    --surface-alt: {surface_alt};
+    --text: {text};
+    --muted: {muted};
+    --primary: {primary};
+    --accent: {accent};
+    --dark: {dark};
+    --on-primary: {on_primary};
+    --border: rgba(23,32,25,.13);
+    --font-body: {body_font};
+    --font-heading: {heading_font};
+    --section-space: {section_space};
+    --intro-space: {intro_space};
+    --max: {max_width};
+    --radius: {radius_value};
+    --shadow: {shadow_value};
+    --gold: var(--accent);
+    --gold-light: var(--accent);
+}}
 
-    return "\n".join([
-        "/* AI Design Renderer */",
-        f"body.design-renderer .button{{border-radius:{radius};}}",
-        nav_rule,
-        *order_rules,
-        *hero_rules,
-        type_rule,
-        card_rule,
-    ])
+body {{ font-family: var(--font-body); color: var(--text); background: var(--bg); }}
+h1, h2, h3, h4, .logo, .button {{ font-family: var(--font-heading); }}
+h1, h2, h3, h4 {{ color: var(--text); }}
+.container {{ max-width: var(--max); }}
+.header {{ background: var(--surface); border-color: var(--border); }}
+nav a {{ color: var(--muted); }}
+nav a:hover, nav a:focus {{ color: var(--text); }}
+.button.primary {{ background: var(--primary); color: var(--on-primary); box-shadow: var(--shadow); }}
+.button.secondary {{ border-color: var(--border); background: var(--surface-alt); color: var(--text); }}
+.eyebrow, .service-number, .benefit-number, .process-card > span {{ color: var(--primary); }}
+.rendered-main > .section, .local-section, .cta-section {{ background: var(--surface); color: var(--text); }}
+.dark, .process-section {{ background: var(--surface); }}
+.service-card, .benefit-card, .process-card, details, .location-box, .hero-panel {{ background: var(--surface-alt); border-color: var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }}
+.service-card {{ min-height: 220px; transition: transform .35s ease, box-shadow .35s ease, border-color .35s ease; }}
+.service-card:hover {{ transform: translateY(-6px); box-shadow: 0 24px 60px rgba(20,30,24,.14); border-color: var(--primary); }}
+.service-card h3 {{ margin-top: 42px; }}
+.service-card p, .process-card p, .section-heading p, .large-copy, .intro-copy, .local-copy, .image-feature-copy p, .cta-box p, details p, .footer p {{ color: var(--muted); }}
+.process-section, .local-section, .cta-box {{ background: var(--surface); }}
+.cta-box {{ border-color: var(--border); border-radius: calc(var(--radius) + 4px); box-shadow: var(--shadow); }}
+.hero {{ background: var(--surface); color: var(--text); }}
+.hero-copy {{ color: var(--muted); }}
+.hero-photo, .image-feature img {{ border-color: var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }}
+.hero-full-bleed {{ min-height: min(760px, 88vh); display: grid; align-items: center; background: var(--dark); }}
+.hero-full-bleed .hero-background {{ position: absolute; inset: 0; }}
+.hero-full-bleed .hero-background img {{ width: 100%; height: 100%; object-fit: cover; display: block; animation: heroZoom 12s ease-out both; }}
+.hero-full-bleed .hero-overlay {{ position: absolute; inset: 0; background: linear-gradient(90deg, color-mix(in srgb, var(--dark) 78%, transparent), color-mix(in srgb, var(--dark) 28%, transparent)); }}
+.hero-full-bleed .hero-content-overlay {{ position: relative; z-index: 1; text-align: center; max-width: 980px; margin-inline: auto; padding-block: 110px; }}
+.hero-full-bleed .hero-content-overlay .hero-copy {{ margin: 24px auto 30px; max-width: 760px; }}
+.hero-full-bleed .hero-content-overlay .actions {{ justify-content: center; }}
+.hero-full-bleed .hero-content-overlay h1, .hero-full-bleed .hero-content-overlay .hero-copy, .hero-full-bleed .hero-content-overlay .location {{ color: #fff; }}
+.hero-full-bleed .hero-content-overlay .eyebrow {{ color: var(--accent); }}
+.tone-dark {{ background: var(--dark) !important; color: #fff !important; }}
+.tone-dark h1, .tone-dark h2, .tone-dark h3, .tone-dark h4, .tone-dark .large-copy, .tone-dark .hero-copy {{ color: #fff; }}
+.tone-dark .eyebrow, .tone-dark .service-number, .tone-dark .benefit-number, .tone-dark .process-card > span {{ color: var(--accent); }}
+.tone-dark .service-card, .tone-dark .benefit-card, .tone-dark .process-card, .tone-dark details, .tone-dark .location-box {{ background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.16); box-shadow: none; }}
+.tone-dark .service-card p, .tone-dark .benefit-card p, .tone-dark .process-card p, .tone-dark details p {{ color: rgba(255,255,255,.72); }}
+.reveal {{ will-change: transform, opacity; }}
+.js-enabled .reveal {{ opacity: 0; transform: translateY(22px); transition: opacity .7s ease, transform .7s ease; }}
+.js-enabled .reveal.is-visible {{ opacity: 1; transform: none; }}
+.image-feature img, .hero-photo img {{ transition: transform .8s ease; }}
+.hero-photo:hover img, .image-feature:hover img {{ transform: scale(1.025); }}
+.menu-toggle {{ display: none; border: 1px solid var(--border); background: var(--surface-alt); color: var(--text); border-radius: 8px; padding: 10px 13px; font: inherit; cursor: pointer; }}
+@keyframes heroZoom {{ from {{ transform: scale(1.04); }} to {{ transform: scale(1); }} }}
+@media (max-width: 850px) {{
+    .menu-toggle {{ display: inline-flex; align-items: center; justify-content: center; }}
+    .site-nav {{ display: none; position: absolute; left: 4%; right: 4%; top: calc(100% + 8px); padding: 14px; flex-direction: column; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }}
+    .site-nav.is-open {{ display: flex; }}
+    .site-nav a {{ padding: 11px 10px; }}
+    .nav {{ position: relative; min-height: 68px; }}
+    .hero-full-bleed {{ min-height: 680px; }}
+    .hero-full-bleed .hero-content-overlay {{ padding-block: 90px; }}
+}}
+@media (prefers-reduced-motion: reduce) {{
+    .js-enabled .reveal, .js-enabled .reveal.is-visible {{ opacity: 1; transform: none; transition: none; }}
+    .hero-full-bleed .hero-background img {{ animation: none; }}
+}}
+"""
+
 
 def build_html(business, copy, niche, output_dir, handoff=None):
     name = get_business_name(business, {})
-
     phone = business.get("phone", "")
     address = business.get("address", "")
     website = business.get("website", "")
     verified_services = get_verified_services(business, handoff or {})
 
+    design = copy.get("design_spec", {})
+    if not isinstance(design, dict):
+        design = {}
+    design_css = build_design_css(design)
+    hero_style = str(design.get("hero_style", "")).lower()
+    section_order = design.get("section_order", [])
+    if not isinstance(section_order, list):
+        section_order = []
+
+    allowed_sections = {
+        "hero",
+        "about",
+        "services",
+        "benefits",
+        "process",
+        "local",
+        "faq",
+        "cta",
+    }
+    order = []
+    for section in section_order:
+        key = str(section).strip().lower()
+        if key in allowed_sections and key not in order:
+            order.append(key)
+
+    if not order:
+        order = ["hero", "about", "services", "benefits", "process", "local", "faq", "cta"]
+
+    system = design.get("design_system", {})
+    if not isinstance(system, dict):
+        system = {}
+    dark_sections = system.get("dark_sections", [])
+    if not isinstance(dark_sections, list):
+        dark_sections = []
+    dark_sections = {str(item).strip().lower() for item in dark_sections}
+
+    def tone_class(key, base):
+        tone = "tone-dark" if key in dark_sections else "tone-light"
+        return f"{base} {tone}"
+
     image_queries = copy.get("image_queries", [])
     if not isinstance(image_queries, list):
         image_queries = []
     image_queries = [str(x).strip() for x in image_queries if str(x).strip()]
-    image_queries = (image_queries + [f"professional {niche} service", f"local {niche} business"])[:2]
+    image_queries = (
+        image_queries
+        + [f"professional {niche} service", f"local {niche} business"]
+    )[:2]
 
     image_alt = copy.get("image_alt", [])
     if not isinstance(image_alt, list):
         image_alt = []
     image_alt = [str(x).strip() for x in image_alt if str(x).strip()]
-    image_alt = (image_alt + [f"Professional {niche} service", f"Local {niche} business"])[:2]
+    image_alt = (
+        image_alt
+        + [f"Professional {niche} service", f"Local {niche} business"]
+    )[:2]
 
     images_dir = Path(output_dir) / "images"
 
@@ -1293,135 +1508,52 @@ def build_html(business, copy, niche, output_dir, handoff=None):
         "headline",
         f"Professional {niche} Service in Your Area",
     )
-
-    subheadline = copy.get(
-        "subheadline",
-        "",
-    )
-
-    intro = copy.get(
-        "intro",
-        "",
-    )
-
+    subheadline = copy.get("subheadline", "")
+    intro = copy.get("intro", "")
     about_title = copy.get(
         "about_title",
         f"Local {niche} Made Simple",
     )
-
-    about = copy.get(
-        "about",
-        "",
-    )
-
-    services_intro = copy.get(
-        "services_intro",
-        "",
-    )
-
+    about = copy.get("about", "")
+    services_intro = copy.get("services_intro", "")
     services = filter_services(
         copy.get("services", []),
         verified_services,
     )
-
-    benefits = copy.get(
-        "benefits",
-        [],
-    )
-
-    process = copy.get(
-        "process",
-        [],
-    )
-
-    local_intro = copy.get(
-        "local_intro",
-        "",
-    )
-
-    faq = copy.get(
-        "faq",
-        [],
-    )
-
-    cta_title = copy.get(
-        "cta_title",
-        f"Ready to Get Started?",
-    )
-
-    cta_text = copy.get(
-        "cta_text",
-        "",
-    )
+    benefits = copy.get("benefits", [])
+    process = copy.get("process", [])
+    local_intro = copy.get("local_intro", "")
+    faq = copy.get("faq", [])
+    cta_title = copy.get("cta_title", "Ready to Get Started?")
+    cta_text = copy.get("cta_text", "")
 
     seo = copy.get("seo", {})
     seo_title = str(
-        seo.get("title")
-        or f"{name} | {niche}"
+        seo.get("title") or f"{name} | {niche}"
     ).strip()
     meta_description = str(
-        seo.get("meta_description")
-        or subheadline
-        or intro
+        seo.get("meta_description") or subheadline or intro
     ).strip()
     primary_keyword = str(
         seo.get("primary_keyword") or niche
     ).strip()
 
-    design = copy.get("design_spec", {})
-    direction = str(design.get("direction", "Clean Professional")).strip().lower()
-    mode_map = {
-        "premium dark": "premium-dark",
-        "clean professional": "clean-professional",
-        "bold local business": "bold-local",
-        "luxury editorial": "luxury-editorial",
-        "modern corporate": "modern-corporate",
-        "minimal conversion": "minimal-conversion",
-        "experimental editorial": "experimental-editorial",
-    }
-    design_mode = next((v for k, v in mode_map.items() if k in direction), "clean-professional")
-    hero_text = str(design.get("hero_style", "")).lower()
-    hero_mode = (
-        "full-bleed" if any(x in hero_text for x in ("full-bleed", "full width", "background image"))
-        else "offset" if any(x in hero_text for x in ("offset", "overlap", "panel"))
-        else "standard"
-    )
-
     phone_html = phone_link(phone)
 
     services_html = ""
-
-    for index, service in enumerate(
-        services[:8],
-        1,
-    ):
+    for index, service in enumerate(services[:8], 1):
         if not isinstance(service, dict):
             continue
 
-        service_name = service.get(
-            "name",
-            "",
-        )
-
-        description = service.get(
-            "description",
-            "",
-        )
+        service_name = service.get("name", "")
+        description = service.get("description", "")
 
         if service_name and description:
             services_html += f"""
             <article class="service-card">
-                <span class="service-number">
-                    {index:02d}
-                </span>
-
-                <h3>
-                    {escape(str(service_name))}
-                </h3>
-
-                <p>
-                    {escape(str(description))}
-                </p>
+                <span class="service-number">{index:02d}</span>
+                <h3>{escape(str(service_name))}</h3>
+                <p>{escape(str(description))}</p>
             </article>
             """
 
@@ -1429,23 +1561,16 @@ def build_html(business, copy, niche, output_dir, handoff=None):
         services_html = f"""
         <article class="service-card">
             <span class="service-number">01</span>
-
-            <h3>
-                {niche_title} Services
-            </h3>
-
+            <h3>{niche_title} Services</h3>
             <p>
-                Contact the business directly to discuss your needs and determine the appropriate service for your situation.
+                Contact the business directly to discuss your needs and determine
+                the appropriate service for your situation.
             </p>
         </article>
         """
 
     benefits_html = ""
-
-    for index, benefit in enumerate(
-        benefits[:4],
-        1,
-    ):
+    for index, benefit in enumerate(benefits[:4], 1):
         if isinstance(benefit, dict):
             benefit_title = benefit.get("title") or benefit.get("name") or ""
             benefit_text = benefit.get("text") or benefit.get("description") or ""
@@ -1456,152 +1581,254 @@ def build_html(business, copy, niche, output_dir, handoff=None):
         if benefit_title:
             benefits_html += f"""
             <article class="benefit-card">
-                <span class="benefit-number">
-                    {index:02d}
-                </span>
-
+                <span class="benefit-number">{index:02d}</span>
                 <div>
-                    <h3>
-                        {escape(str(benefit_title))}
-                    </h3>
-
-                    {f'<p>{escape(str(benefit_text))}</p>' if benefit_text else ''}
+                    <h3>{escape(str(benefit_title))}</h3>
+                    {f'<p>{escape(str(benefit_text))}</p>' if benefit_text else ""}
                 </div>
             </article>
             """
 
     process_html = ""
-
-    for index, item in enumerate(
-        process[:3],
-        1,
-    ):
+    for index, item in enumerate(process[:3], 1):
         if not isinstance(item, dict):
             continue
 
-        title = item.get(
-            "title",
-            "",
-        )
-
-        text = item.get(
-            "text",
-            "",
-        )
+        title = item.get("title", "")
+        text = item.get("text", "")
 
         if title and text:
             process_html += f"""
             <article class="process-card">
-
-                <span>
-                    {index:02d}
-                </span>
-
-                <h3>
-                    {escape(str(title))}
-                </h3>
-
-                <p>
-                    {escape(str(text))}
-                </p>
-
+                <span>{index:02d}</span>
+                <h3>{escape(str(title))}</h3>
+                <p>{escape(str(text))}</p>
             </article>
             """
 
     faq_html = ""
-
     for item in faq[:5]:
         if not isinstance(item, dict):
             continue
 
-        question = item.get(
-            "question",
-            "",
-        )
-
-        answer = item.get(
-            "answer",
-            "",
-        )
+        question = item.get("question", "")
+        answer = item.get("answer", "")
 
         if question and answer:
             faq_html += f"""
             <details>
-                <summary>
-                    {escape(str(question))}
-                </summary>
-
-                <p>
-                    {escape(str(answer))}
-                </p>
+                <summary>{escape(str(question))}</summary>
+                <p>{escape(str(answer))}</p>
             </details>
             """
 
     location_html = ""
-
     if address:
         location_html = f"""
         <div class="location-box">
-            <span class="eyebrow">
-                LOCAL LOCATION
-            </span>
-
-            <h3>
-                {escape(str(address))}
-            </h3>
+            <span class="eyebrow">LOCAL LOCATION</span>
+            <h3>{escape(str(address))}</h3>
         </div>
         """
 
     website_html = ""
-
     if website:
         website_html = f"""
-        <a
-            class="button secondary"
-            href="{escape(str(website))}"
-            target="_blank"
-            rel="noopener"
-        >
+        <a class="button secondary"
+           href="{escape(str(website))}"
+           target="_blank"
+           rel="noopener">
             Visit Website
         </a>
         """
 
+    # Phase 2B: the hero renderer follows the AI hero_style.
+    hero_mode = "split"
+    if any(term in hero_style for term in (
+        "full-width", "full width", "full-bleed", "background image"
+    )):
+        hero_mode = "full-bleed"
+    elif any(term in hero_style for term in (
+        "overlap", "offset", "panel"
+    )):
+        hero_mode = "overlap"
+
+    hero_section = ""
+    if hero_mode == "full-bleed":
+        hero_section = f"""
+        <section data-section="hero" class="hero hero-full-bleed">
+            <div class="hero-background">
+                <img src="{escape(hero_image, quote=True)}"
+                     alt="{escape(image_alt[0], quote=True)}"
+                     loading="eager">
+            </div>
+            <div class="hero-overlay"></div>
+            <div class="container hero-content hero-content-overlay">
+                <span class="eyebrow">{niche_label}</span>
+                <h1>{escape(str(headline))}</h1>
+                <p class="hero-copy">{escape(str(subheadline))}</p>
+                <div class="actions">
+                    {phone_html}
+                    <a class="button secondary" href="#contact">Get Started</a>
+                </div>
+                {f'<p class="location">{escape(str(address))}</p>' if address else ""}
+            </div>
+        </section>
+        """
+    elif hero_mode == "overlap":
+        hero_section = f"""
+        <section data-section="hero" class="hero hero-overlap">
+            <div class="container hero-grid">
+                <div class="hero-content hero-panel">
+                    <span class="eyebrow">{niche_label}</span>
+                    <h1>{escape(str(headline))}</h1>
+                    <p class="hero-copy">{escape(str(subheadline))}</p>
+                    <div class="actions">
+                        {phone_html}
+                        <a class="button secondary" href="#contact">Get Started</a>
+                    </div>
+                    {f'<p class="location">{escape(str(address))}</p>' if address else ""}
+                </div>
+                <div class="hero-visual hero-overlap-visual">
+                    <div class="hero-photo">
+                        <img src="{escape(hero_image, quote=True)}"
+                             alt="{escape(image_alt[0], quote=True)}"
+                             loading="eager">
+                    </div>
+                </div>
+            </div>
+        </section>
+        """
+    else:
+        hero_section = f"""
+        <section data-section="hero" class="hero">
+            <div class="container hero-grid">
+                <div class="hero-content">
+                    <span class="eyebrow">{niche_label}</span>
+                    <h1>{escape(str(headline))}</h1>
+                    <p class="hero-copy">{escape(str(subheadline))}</p>
+                    <div class="actions">
+                        {phone_html}
+                        <a class="button secondary" href="#contact">Get Started</a>
+                    </div>
+                    {f'<p class="location">{escape(str(address))}</p>' if address else ""}
+                </div>
+                <div class="hero-visual">
+                    <div class="hero-photo">
+                        <img src="{escape(hero_image, quote=True)}"
+                             alt="{escape(image_alt[0], quote=True)}"
+                             loading="eager">
+                        <div class="photo-overlay">{niche_label}</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        """
+
+    sections = {
+        "hero": hero_section,
+        "about": f"""
+        <section data-section="about" id="about" class="{tone_class('about', 'section')}">
+            <div class="container about-grid">
+                <div class="about-number">01</div>
+                <div>
+                    <span class="eyebrow">ABOUT</span>
+                    <h2>{escape(str(about_title))}</h2>
+                    <p class="large-copy">{escape(str(about))}</p>
+                </div>
+            </div>
+        </section>
+        """,
+        "services": f"""
+        <section data-section="services" id="services" class="{tone_class('services', 'section')}">
+            <div class="container">
+                <div class="section-heading">
+                    <span class="eyebrow">{niche_label} SERVICES</span>
+                    <h2>Services Built Around Your Needs</h2>
+                    <p>{escape(str(services_intro))}</p>
+                </div>
+                <div class="service-grid">{services_html}</div>
+            </div>
+        </section>
+        """,
+        "benefits": f"""
+        <section data-section="benefits" class="{tone_class('benefits', 'section')}">
+            <div class="container">
+                <div class="section-heading">
+                    <span class="eyebrow">WHY IT MATTERS</span>
+                    <h2>Service Built Around Your Needs</h2>
+                </div>
+                <div class="benefit-grid">{benefits_html}</div>
+            </div>
+        </section>
+        """,
+        "process": f"""
+        <section data-section="process" id="process" class="{tone_class('process', 'section process-section')}">
+            <div class="container">
+                <div class="section-heading">
+                    <span class="eyebrow">HOW IT WORKS</span>
+                    <h2>Simple Steps. Clear Process.</h2>
+                </div>
+                <div class="process-grid">{process_html}</div>
+            </div>
+        </section>
+        """,
+        "local": f"""
+        <section data-section="local" class="{tone_class('local', 'local-section')}">
+            <div class="container local-grid">
+                <div>
+                    <span class="eyebrow">{niche_label}</span>
+                    <h2>Local Service When You Need It</h2>
+                </div>
+                <div class="local-copy">
+                    <p>{escape(str(local_intro))}</p>
+                    {location_html}
+                </div>
+            </div>
+        </section>
+        """,
+        "faq": f"""
+        <section data-section="faq" id="faq" class="{tone_class('faq', 'section faq-section')}">
+            <div class="container">
+                <div class="section-heading">
+                    <span class="eyebrow">FAQ</span>
+                    <h2>{niche_title} Questions</h2>
+                </div>
+                <div class="faq">{faq_html}</div>
+            </div>
+        </section>
+        """ if faq_html else "",
+        "cta": f"""
+        <section data-section="cta" id="contact" class="{tone_class('cta', 'cta-section')}">
+            <div class="container cta-box">
+                <div>
+                    <span class="eyebrow">GET STARTED</span>
+                    <h2>{escape(str(cta_title))}</h2>
+                    <p>{escape(str(cta_text))}</p>
+                </div>
+                <div class="cta-actions">
+                    {phone_html}
+                    {website_html}
+                </div>
+            </div>
+        </section>
+        """,
+    }
+
+    rendered_sections = "\n".join(
+        sections[key] for key in order if sections.get(key)
+    )
+
     return f"""<!doctype html>
 <html lang="en">
-
 <head>
-
 <meta charset="utf-8">
-
-<meta
-    name="viewport"
-    content="width=device-width,initial-scale=1"
->
-
-<title>
-    {escape(seo_title)}
-</title>
-
-<meta
-    name="description"
-    content="{escape(meta_description)}"
->
-
-<meta
-    name="robots"
-    content="noindex,follow"
->
-
-<meta
-    property="og:title"
-    content="{escape(seo_title)}"
->
-
-<meta
-    property="og:description"
-    content="{escape(meta_description)}"
->
-
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(seo_title)}</title>
+<meta name="description" content="{escape(meta_description)}">
+<meta name="robots" content="noindex,follow">
+<meta property="og:title" content="{escape(seo_title)}">
+<meta property="og:description" content="{escape(meta_description)}">
 <script type="application/ld+json">
 {json.dumps({
     "@context": "https://schema.org",
@@ -1615,433 +1842,41 @@ def build_html(business, copy, niche, output_dir, handoff=None):
     "url": str(website) if website else None,
 }, ensure_ascii=False, separators=(",", ":"))}
 </script>
-
-<link
-    rel="stylesheet"
-    href="styles.css"
->
-
+<link rel="stylesheet" href="styles.css">
+<style id="ai-design-overrides">{design_css}</style>
 </head>
-
-
-<body class="design-renderer design-{design_mode} design-nav design-typography design-cards">
-
+<body>
 <header class="header">
-
     <div class="container nav">
-
-        <a
-            class="logo"
-            href="#"
-        >
-            {escape(str(name))}
-        </a>
-
-        <nav>
+        <a class="logo" href="#">{escape(str(name))}</a>
+        <nav class="site-nav" id="site-menu">
             <a href="#services">Services</a>
             <a href="#about">About</a>
             <a href="#process">How It Works</a>
             <a href="#faq">FAQ</a>
             <a href="#contact">Contact</a>
         </nav>
-
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-menu">Menu</button>
         {phone_html}
-
     </div>
-
 </header>
-
-
 <main class="rendered-main">
-
-
-<section data-section="hero" data-hero-mode="{hero_mode}" class="hero">
-
-    <div class="hero-pattern"></div>
-
-    <div class="container hero-grid">
-
-        <div class="hero-content">
-
-            <span class="eyebrow">
-                {niche_label}
-            </span>
-
-            <h1>
-                {escape(str(headline))}
-            </h1>
-
-            <p class="hero-copy">
-                {escape(str(subheadline))}
-            </p>
-
-            <div class="actions">
-
-                {phone_html}
-
-                <a
-                    class="button secondary"
-                    href="#contact"
-                >
-                    Get Started
-                </a>
-
-            </div>
-
-            {
-                f'<p class="location">{escape(str(address))}</p>'
-                if address
-                else ""
-            }
-
-        </div>
-
-
-        <div class="hero-visual">
-
-            <div class="hero-photo">
-                <img
-                    src="{escape(hero_image, quote=True)}"
-                    alt="{escape(image_alt[0], quote=True)}"
-                    loading="eager"
-                >
-                <div class="photo-overlay">
-                    {niche_label}
-                </div>
-            </div>
-
-            <div class="visual-small">
-                PROFESSIONAL SERVICE.<br>
-                LOCAL BUSINESS.
-            </div>
-
-        </div>
-
-    </div>
-
-</section>
-
-
-<section data-section="intro" class="intro-section">
-
-    <div class="container intro-grid">
-
-        <div>
-
-            <span class="eyebrow">
-                {niche_label}
-            </span>
-
-            <h2>
-                {escape(str(about_title))}
-            </h2>
-
-        </div>
-
-        <div class="intro-copy">
-
-            <p>
-                {escape(str(intro))}
-            </p>
-
-        </div>
-
-    </div>
-
-</section>
-
-
-<section data-section="image feature" class="image-feature-section">
-
-    <div class="container image-feature-grid">
-
-        <div class="image-feature-copy">
-            <span class="eyebrow">
-                {niche_label}
-            </span>
-            <h2>
-                Professional Work. Clear Communication.
-            </h2>
-            <p>
-                {escape(str(intro))}
-            </p>
-        </div>
-
-        <figure class="image-feature">
-            <img
-                src="{escape(secondary_image, quote=True)}"
-                alt="{escape(image_alt[1], quote=True)}"
-                loading="lazy"
-            >
-            <figcaption>
-                Professional {niche_title} photography.
-            </figcaption>
-        </figure>
-
-    </div>
-
-</section>
-
-
-<section
-    id="services"
-    data-section="services"
-    class="section"
->
-
-    <div class="container">
-
-        <div class="section-heading">
-
-            <span class="eyebrow">
-                {niche_label} SERVICES
-            </span>
-
-            <h2>
-                Services Built Around Your Needs
-            </h2>
-
-            <p>
-                {escape(str(services_intro))}
-            </p>
-
-        </div>
-
-        <div class="service-grid">
-            {services_html}
-        </div>
-
-    </div>
-
-</section>
-
-
-<section
-    id="about"
-    data-section="about"
-    class="section dark"
->
-
-    <div class="container about-grid">
-
-        <div class="about-number">
-            01
-        </div>
-
-        <div>
-
-            <span class="eyebrow">
-                ABOUT
-            </span>
-
-            <h2>
-                {escape(str(about_title))}
-            </h2>
-
-            <p class="large-copy">
-                {escape(str(about))}
-            </p>
-
-        </div>
-
-    </div>
-
-</section>
-
-
-<section data-section="benefits" class="section">
-
-    <div class="container">
-
-        <div class="section-heading">
-
-            <span class="eyebrow">
-                WHY IT MATTERS
-            </span>
-
-            <h2>
-                Service Built Around Your Needs
-            </h2>
-
-        </div>
-
-        <div class="benefit-grid">
-            {benefits_html}
-        </div>
-
-    </div>
-
-</section>
-
-
-<section
-    id="process"
-    data-section="process"
-    class="section process-section"
->
-
-    <div class="container">
-
-        <div class="section-heading">
-
-            <span class="eyebrow">
-                HOW IT WORKS
-            </span>
-
-            <h2>
-                Simple Steps. Clear Process.
-            </h2>
-
-        </div>
-
-        <div class="process-grid">
-            {process_html}
-        </div>
-
-    </div>
-
-</section>
-
-
-<section data-section="local" class="local-section">
-
-    <div class="container local-grid">
-
-        <div>
-
-            <span class="eyebrow">
-                {niche_label}
-            </span>
-
-            <h2>
-                Local Service When You Need It
-            </h2>
-
-        </div>
-
-        <div class="local-copy">
-
-            <p>
-                {escape(str(local_intro))}
-            </p>
-
-            {location_html}
-
-        </div>
-
-    </div>
-
-</section>
-
-
-{
-    f'''
-<section
-    id="faq"
-    data-section="faq"
-    class="section faq-section"
->
-
-    <div class="container">
-
-        <div class="section-heading">
-
-            <span class="eyebrow">
-                FAQ
-            </span>
-
-            <h2>
-                {niche_title} Questions
-            </h2>
-
-        </div>
-
-        <div class="faq">
-            {faq_html}
-        </div>
-
-    </div>
-
-</section>
-'''
-    if faq_html
-    else ""
-}
-
-
-<section
-    id="contact"
-    data-section="cta"
-    class="cta-section"
->
-
-    <div class="container cta-box">
-
-        <div>
-
-            <span class="eyebrow">
-                GET STARTED
-            </span>
-
-            <h2>
-                {escape(str(cta_title))}
-            </h2>
-
-            <p>
-                {escape(str(cta_text))}
-            </p>
-
-        </div>
-
-        <div class="cta-actions">
-
-            {phone_html}
-
-            {website_html}
-
-        </div>
-
-    </div>
-
-</section>
-
-
+{rendered_sections}
 </main>
-
-
 <footer class="footer">
-
     <div class="container footer-grid">
-
         <div>
-
-            <strong>
-                {escape(str(name))}
-            </strong>
-
-            {
-                f'<p>{escape(str(address))}</p>'
-                if address
-                else ""
-            }
-
+            <strong>{escape(str(name))}</strong>
+            {f'<p>{escape(str(address))}</p>' if address else ""}
         </div>
-
-        <div>
-            {phone_html}
-        </div>
-
+        <div>{phone_html}</div>
     </div>
-
 </footer>
-
-
 <script src="script.js"></script>
-
 </body>
-
 </html>
 """
+
 
 
 def generate_website(handoff_path):
@@ -2078,26 +1913,8 @@ def generate_website(handoff_path):
         encoding="utf-8",
     )
 
-    colors = design.get("color_direction", {})
-
-    primary = str(colors.get("primary", "#07111f"))
-    accent = str(colors.get("accent", "#d7b56d"))
-    background = str(colors.get("background", "#0d1b2e"))
-    text_color = str(colors.get("text", "#f7f9fc"))
-
-    design_css = f"""
-/* AI Design Spec */
-:root {{
-    --bg: {primary};
-    --bg-soft: {background};
-    --card: {primary};
-    --text: {text_color};
-    --gold: {accent};
-    --gold-light: {accent};
-}}
-"""
-
-    final_css = CSS + design_css + build_design_css(design)
+    design_css = build_design_css(design)
+    final_css = CSS + design_css
 
     html = build_html(
         business,
@@ -2174,6 +1991,8 @@ Images are generated as local files in `images/` for the concept build.
         f"[design] Elementor notes: "
         f"{design.get('elementor_notes', [])}"
     )
+    print(f"[design] Reference patterns: {design.get('reference_patterns', [])}")
+    print(f"[design] Dark sections: {design.get('design_system', {}).get('dark_sections', [])}")
     print(f"[seo] Title: {copy.get('seo', {}).get('title', '')}")
     print(f"[seo] Primary keyword: {copy.get('seo', {}).get('primary_keyword', '')}")
 
