@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import re
 from html import escape
 from pathlib import Path
 from urllib.request import Request, urlopen

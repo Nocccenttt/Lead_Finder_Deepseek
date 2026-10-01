@@ -3,7 +3,7 @@ import json
 import os
 from html import escape
 from pathlib import Path
-from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -16,19 +16,90 @@ load_dotenv()
 MODEL = "deepseek-chat"
 
 
+INSPIRATION_REFERENCE_BRIEF = """
+Use these curated references as DESIGN INSPIRATION ONLY. Do not copy layouts, branding,
+copy, assets, or distinctive compositions.
+
+Admire The Web:
+- Agency category: https://admiretheweb.com/category/agency/
+  Useful patterns observed: agency/studio presentation, strong visual hierarchy, polished
+  portfolio-style presentation, varied navigation and hero treatments.
+- Professional category: https://admiretheweb.com/category/professional/
+  Useful patterns observed: clean professional layouts, restrained typography, strong
+  whitespace, fixed/sticky navigation, clear information hierarchy.
+- Example: Shift Capital: https://admiretheweb.com/inspiration/shift-capital/
+  Tags include fixed header/navigation, overlap, parallax, slideshow, smooth scroll.
+- Example: Cecilia Halling Howells:
+  https://admiretheweb.com/inspiration/cecilia-halling-howells/
+  Tags include natural/earth colors, fixed header, large footer, reveal.
+
+Best Website Gallery:
+- Example: Beagle: https://bestwebsite.gallery/sites/sotd/2015/04/19/beagle
+  Style tags: background photos, minimalist, responsive, one pager, sticky navigation.
+- Example: Zumtobel Group:
+  https://bestwebsite.gallery/sites/sotd/2021/01/07/zumtobel-group
+  Style tags: full width, typography, background photos, responsive, sticky navigation.
+- Example: Norgram: https://bestwebsite.gallery/sites/sotd/2017/03/13/norgram
+  Style tags: full width, typography, agency website, case studies, minimalist,
+  bright, responsive, sticky navigation.
+- Example: Build in Amsterdam:
+  https://bestwebsite.gallery/sites/sotd/2018/09/04/build-in-amsterdam
+  Style tags: full width, typography, agency website, background photos, case studies,
+  responsive, sticky navigation.
+
+Translate these observations into an ORIGINAL Elementor-compatible design appropriate
+to the supplied business. The references are pattern libraries, not templates.
+"""
+
+
 SYSTEM_PROMPT = """
-You are a senior local SEO strategist and conversion copywriter creating a website for a local business.
+You are a senior local SEO strategist, conversion copywriter, and Design Director creating an original,
+high-converting website preview for a local business.
 
-The supplied source data contains the verified business information and may contain a niche/category.
-Use ONLY verified business facts from the source data. The business niche may be inferred from an explicit
-niche/category field or an obvious business name, but do not invent unsupported services or claims.
+The supplied source data contains verified business information. Use verified facts for company claims.
+The business niche may be inferred from an explicit niche/category or an obvious business name.
 
-NEVER invent reviews, ratings, testimonials, awards, certifications, licenses, years in business,
-customer counts, guarantees, pricing, discounts, statistics, staff, locations, service areas,
-business hours, or unsupported claims.
+NEVER invent company-specific facts such as reviews, ratings, testimonials, awards, certifications,
+licenses, years in business, customer counts, guarantees, pricing, discounts, statistics, staff,
+locations, service areas, business hours, insurance status, or unsupported credentials.
 
-Return ONLY valid JSON with exactly these keys:
+You MAY create useful general educational/contextual content about the business category and local search
+intent. General industry information must NOT be presented as a fact about the business.
+
+The final website will be rebuilt ONLY in WordPress using Elementor / Elementor Pro.
+Every design decision must be realistically achievable with Elementor containers, widgets, responsive
+controls, global colors/fonts, custom CSS, and minimal front-end JavaScript.
+Do not design for Divi, Gutenberg, Bricks, Webflow, Wix, Shopify, React, Vue, or custom backend systems.
+
+Return ONLY valid JSON with exactly this structure. Keep every text field concise so the complete JSON fits within the output limit:
 {
+  "seo": {
+    "title": "",
+    "meta_description": "",
+    "primary_keyword": "",
+    "secondary_keywords": [],
+    "search_intent": ""
+  },
+  "design_spec": {
+    "direction": "",
+    "visual_style": "",
+    "layout_style": "",
+    "hero_style": "",
+    "navigation_style": "",
+    "color_direction": {
+      "primary": "",
+      "accent": "",
+      "background": "",
+      "text": ""
+    },
+    "typography_style": "",
+    "card_style": "",
+    "button_style": "",
+    "section_order": [],
+    "image_strategy": "",
+    "elementor_compatible": true,
+    "elementor_notes": []
+  },
   "headline": "",
   "subheadline": "",
   "intro": "",
@@ -52,33 +123,55 @@ Return ONLY valid JSON with exactly these keys:
   "image_alt": []
 }
 
+SEO CONTENT RULES:
+- Create content useful for a real SEO landing page, even though this is a preview.
+- Identify one primary local search intent from the verified business niche and location.
+- Use the business name and verified location naturally.
+- Use relevant secondary keywords naturally; never keyword stuff.
+- The SEO title should normally contain the primary niche/service and verified city/state when available.
+- The meta description should be natural, useful, locally relevant, and not stuffed with keywords.
+- Use semantic variations instead of repeating the same keyword.
+- General industry information may make the page more substantial, but never attribute general information to the business.
+- Do not claim that the business provides a service unless the source verifies it.
+- If services are not verified, return an empty services array and use general/contextual wording elsewhere.
+- Do not invent service areas, credentials, experience, reviews, ratings, certifications, licenses, guarantees, pricing, or business history.
+- Write for humans first while naturally supporting local search relevance.
+
+DESIGN RULES:
+- Do not automatically use the same dark/gold design for every business.
+- Choose a design direction appropriate to the business.
+- Possible directions include Premium Dark, Clean Professional, Bold Local Business, Luxury Editorial,
+  Modern Corporate, Minimal Conversion, and Experimental Editorial.
+- Avoid repetitive card grids, excessive rounded cards, generic gradients, predictable hero layouts,
+  excessive decorative elements, and designs that cannot realistically be rebuilt in Elementor.
+- section_order should contain only the sections actually needed.
+- elementor_notes should contain 3-5 concise implementation notes.
+- Do not copy an existing website. Use the supplied design_inspiration as a pattern library and
+  translate its useful traits into an original design appropriate to this business.
+- Do not force every business into the same visual language. Select only reference patterns that fit
+  the business, niche, local audience, and conversion goal.
+- Favor a small number of coherent design traits over a collection of unrelated effects.
+
 CONTENT RULES:
 - Write for the verified niche, not a hardcoded industry.
-- Keep the copy natural, useful, local, and conversion-focused.
-- Use the verified city/state/address when available.
-- Only list services explicitly supported by the source data. If services are not verified, use neutral
-  language and do not invent a service list.
-- Benefits may describe general customer-facing value without making factual company claims.
+- Keep copy natural, useful, local, and conversion-focused.
+- Use verified city/state/address when available.
+- Benefits should describe general customer-facing value unless a company-specific benefit is verified.
 - Process should remain general: Contact, Schedule/Plan, Service/Completion.
-- FAQ answers must remain supported by the source.
+- FAQ answers must remain supported by the source or be clearly general educational questions.
 - Never use unsupported superlatives such as best, #1, top-rated, cheapest, fastest, most trusted, or guaranteed.
 - Do not mention AI, LeadFinder, Wolf Forge, prompts, or internal processes.
-- Avoid keyword stuffing.
 
 IMAGES:
-- The generated site MUST use relevant photography related to the business niche.
-- Return exactly 2 short image search queries in image_queries when possible.
-- Queries should describe realistic professional stock photography for the niche, for example:
-  "professional tree service crew tree trimming"
-  "modern roofing contractor roof installation"
-  "professional dentist dental office"
+- The generated site MUST use relevant realistic photography related to the business niche.
+- Return exactly 2 short image search queries.
 - Do not request logos, fake company branding, screenshots, or identifiable celebrities.
-- image_alt must contain 2 concise, descriptive alt texts matching the two image queries.
+- image_alt must contain 2 concise descriptive alt texts matching the image queries.
 - Prefer realistic photography over abstract graphics.
 
+Before returning JSON, verify that seo, design_spec, all required design fields, and all content fields exist.
 Return ONLY JSON.
 """
-
 
 CSS = r"""
 :root {
@@ -731,7 +824,7 @@ def get_business_name(business, handoff):
         or handoff.get("business_name")
         or handoff.get("business", {}).get("business_name")
         or handoff.get("business", {}).get("name")
-        or "Local Junk Removal"
+        or "Local Business"
     )
 
 
@@ -747,10 +840,101 @@ def get_niche(business, handoff):
     )
 
 
-def stock_image_url(query, width=1600, height=1000):
-    """Return a niche-matched stock-photo URL without requiring another API key."""
-    query = str(query or "").strip() or "professional local business"
-    return f"https://loremflickr.com/{width}/{height}/{quote(query, safe=',-')}"
+def write_image_fallback(path, label):
+    """Create a tiny local SVG fallback so the layout never has a broken image."""
+    label = escape(str(label or "Local Business"))
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000">
+<rect width="1600" height="1000" fill="#0d1b2e"/>
+<circle cx="1280" cy="250" r="280" fill="#13243a"/>
+<circle cx="1280" cy="250" r="180" fill="#1b314d"/>
+<text x="120" y="470" fill="#d7b56d" font-family="Arial,Helvetica,sans-serif"
+      font-size="34" font-weight="700" letter-spacing="5">{label.upper()}</text>
+<text x="120" y="530" fill="#f7f9fc" font-family="Arial,Helvetica,sans-serif"
+      font-size="58" font-weight="700">Professional Local Service</text>
+</svg>"""
+    path.write_text(svg, encoding="utf-8")
+    return path.name
+
+
+def download_stock_image(query, output_dir, filename):
+    """
+    Search Pexels and download one niche-matched photo locally.
+
+    The finished website references the downloaded local file only.
+    Falls back to a local SVG if the API key, search, or download fails.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import requests
+
+        api_key = os.getenv("PEXELS_API_KEY")
+        if not api_key:
+            raise RuntimeError("PEXELS_API_KEY is not configured")
+
+        query = str(query or "").strip() or "professional local business"
+
+        search = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": api_key},
+            params={
+                "query": query,
+                "per_page": 1,
+                "orientation": "landscape",
+            },
+            timeout=20,
+        )
+        search.raise_for_status()
+
+        data = search.json()
+        photos = data.get("photos") or []
+        if not photos:
+            raise RuntimeError("Pexels returned no matching photos")
+
+        photo = photos[0]
+        image_url = (
+            photo.get("src", {}).get("large2x")
+            or photo.get("src", {}).get("large")
+            or photo.get("src", {}).get("original")
+        )
+        if not image_url:
+            raise RuntimeError("Pexels result did not contain a usable image URL")
+
+        image = requests.get(
+            image_url,
+            timeout=30,
+            headers={"User-Agent": "LeadFinder/1.0"},
+            allow_redirects=True,
+        )
+        image.raise_for_status()
+
+        content = image.content
+        content_type = image.headers.get("Content-Type", "").lower()
+        if not content or len(content) < 10_000:
+            raise RuntimeError("Downloaded image was empty or unexpectedly small")
+
+        extension = ".jpg"
+        if "png" in content_type:
+            extension = ".png"
+        elif "webp" in content_type:
+            extension = ".webp"
+
+        target = output_dir / f"{filename}{extension}"
+        target.write_bytes(content)
+
+        photographer = photo.get("photographer") or "Pexels"
+        print(f"[image] Pexels: {query} -> {photographer}")
+        print(f"[image] Saved: {target}")
+        return target.name
+
+    except Exception as error:
+        fallback = output_dir / f"{filename}.svg"
+        write_image_fallback(fallback, query)
+        print(f"[image] Pexels failed for '{query}': {error}")
+        print(f"[image] Using local fallback: {fallback}")
+        return fallback.name
+
 
 
 def phone_link(phone):
@@ -769,13 +953,40 @@ def phone_link(phone):
     )
 
 
+def check_inspiration_sources():
+    urls = [
+        "https://admiretheweb.com/category/agency/",
+        "https://admiretheweb.com/category/professional/",
+        "https://bestwebsite.gallery/sites/sotd/2015/04/19/beagle",
+        "https://bestwebsite.gallery/sites/sotd/2021/01/07/zumtobel-group",
+        "https://bestwebsite.gallery/sites/sotd/2017/03/13/norgram",
+    ]
+
+    reachable = 0
+
+    for url in urls:
+        try:
+            request = Request(
+                url,
+                headers={"User-Agent": "LeadFinder Design Research/1.0"},
+            )
+            with urlopen(request, timeout=8) as response:
+                if 200 <= response.status < 400:
+                    reachable += 1
+        except Exception:
+            continue
+
+    print(
+        f"[inspiration] Reference sources reachable: "
+        f"{reachable}/{len(urls)}"
+    )
+
+
 def generate_copy(business, handoff):
     api_key = os.getenv("DEEPSEEK_API_KEY")
 
     if not api_key:
-        raise RuntimeError(
-            "DEEPSEEK_API_KEY is not set."
-        )
+        raise RuntimeError("DEEPSEEK_API_KEY is not set.")
 
     client = OpenAI(
         api_key=api_key,
@@ -787,10 +998,13 @@ def generate_copy(business, handoff):
             "business": business,
             "niche": get_niche(business, handoff),
             "ai_handoff": handoff,
+            "design_inspiration": INSPIRATION_REFERENCE_BRIEF,
         },
         ensure_ascii=False,
         indent=2,
     )
+
+    check_inspiration_sources()
 
     response = client.chat.completions.create(
         model=MODEL,
@@ -805,8 +1019,8 @@ def generate_copy(business, handoff):
                 "content": source,
             },
         ],
-        temperature=0.5,
-        max_tokens=900,
+        temperature=0.7,
+        max_tokens=2300,
     )
 
     print("\nDeepSeek Usage:")
@@ -818,26 +1032,231 @@ def generate_copy(business, handoff):
             response.usage,
         )
     except Exception as error:
-        print(
-            f"Usage logging skipped: {error}"
-        )
+        print(f"Usage logging skipped: {error}")
 
     content = response.choices[0].message.content or "{}"
 
     try:
-        return json.loads(content)
+        result = json.loads(content)
     except json.JSONDecodeError as error:
         raise RuntimeError(
             f"DeepSeek returned invalid JSON: {error}"
         )
 
+    seo = result.get("seo")
 
-def build_html(business, copy, niche, handoff=None):
+    if not isinstance(seo, dict):
+        raise RuntimeError("DeepSeek did not return a valid seo object.")
+
+    required_seo_fields = [
+        "title",
+        "meta_description",
+        "primary_keyword",
+        "secondary_keywords",
+        "search_intent",
+    ]
+
+    missing_seo = [
+        field
+        for field in required_seo_fields
+        if field not in seo
+    ]
+
+    if missing_seo:
+        raise RuntimeError(
+            "DeepSeek returned an incomplete seo object. "
+            f"Missing: {', '.join(missing_seo)}"
+        )
+
+    design = result.get("design_spec")
+
+    if not isinstance(design, dict):
+        raise RuntimeError(
+            "DeepSeek did not return a valid design_spec."
+        )
+
+    required_design_fields = [
+        "direction",
+        "visual_style",
+        "layout_style",
+        "hero_style",
+        "navigation_style",
+        "color_direction",
+        "typography_style",
+        "card_style",
+        "button_style",
+        "section_order",
+        "image_strategy",
+        "elementor_compatible",
+        "elementor_notes",
+    ]
+
+    missing = [
+        field
+        for field in required_design_fields
+        if field not in design
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "DeepSeek returned an incomplete design_spec. "
+            f"Missing: {', '.join(missing)}"
+        )
+
+    colors = design.get("color_direction")
+
+    if not isinstance(colors, dict):
+        raise RuntimeError(
+            "DeepSeek returned an invalid color_direction."
+        )
+
+    required_colors = [
+        "primary",
+        "accent",
+        "background",
+        "text",
+    ]
+
+    missing_colors = [
+        color
+        for color in required_colors
+        if not colors.get(color)
+    ]
+
+    if missing_colors:
+        raise RuntimeError(
+            "DeepSeek returned incomplete design colors. "
+            f"Missing: {', '.join(missing_colors)}"
+        )
+
+    if design.get("elementor_compatible") is not True:
+        raise RuntimeError(
+            "DeepSeek returned a design that is not Elementor compatible."
+        )
+
+    print("\n[design] Design Spec validated.")
+    print(f"[design] Direction: {design.get('direction')}")
+    print(f"[design] Visual style: {design.get('visual_style')}")
+    print(f"[design] Layout: {design.get('layout_style')}")
+    print(f"[design] Hero: {design.get('hero_style')}")
+    print(f"[design] Sections: {design.get('section_order')}")
+    print(f"[design] Elementor notes: {design.get('elementor_notes')}")
+
+    return result
+
+def get_verified_services(business, handoff):
+    """Return only services explicitly present in the verified source data."""
+    candidates = []
+
+    for source in (business, handoff):
+        if not isinstance(source, dict):
+            continue
+
+        for key in ("services", "service_list", "service_offerings"):
+            value = source.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+
+    verified = []
+    for item in candidates:
+        if isinstance(item, str) and item.strip():
+            verified.append(item.strip())
+        elif isinstance(item, dict):
+            name = item.get("name") or item.get("title") or item.get("service")
+            if name and str(name).strip():
+                verified.append(str(name).strip())
+
+    return verified
+
+
+def filter_services(copy_services, verified_services):
+    """Keep AI services only when the source explicitly verifies them."""
+    if not verified_services:
+        return []
+
+    allowed = {item.casefold() for item in verified_services}
+    filtered = []
+
+    for item in copy_services if isinstance(copy_services, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("title") or item.get("service")
+        if name and str(name).casefold() in allowed:
+            filtered.append(item)
+
+    return filtered
+
+
+
+def build_design_css(design):
+    """Translate the AI design spec into deterministic Elementor-friendly CSS."""
+    direction=str(design.get("direction", "")).lower()
+    hero=str(design.get("hero_style", "")).lower()
+    navigation=str(design.get("navigation_style", "")).lower()
+    typography=str(design.get("typography_style", "")).lower()
+    cards=str(design.get("card_style", "")).lower()
+    buttons=str(design.get("button_style", "")).lower()
+
+    order_map={
+        "hero":10, "intro":20, "image feature":25, "services":30,
+        "about":40, "benefits":50, "process":60, "local":70,
+        "faq":80, "cta":90,
+    }
+    order_rules=[]
+    for section in design.get("section_order", []):
+        key=str(section).strip().lower()
+        if key in order_map:
+            order_rules.append(
+                f'main.rendered-main > [data-section="{key}"] {{order:{order_map[key]};}}'
+            )
+
+    hero_rules=[]
+    if any(x in hero for x in ("full-bleed", "full width", "background image")):
+        hero_rules += [
+            '[data-hero-mode="full-bleed"] .hero-grid{position:static;grid-template-columns:1fr;}',
+            '[data-hero-mode="full-bleed"] .hero-visual{position:absolute;inset:0;min-height:100%;}',
+            '[data-hero-mode="full-bleed"] .hero-photo{position:absolute;inset:0;border:0;border-radius:0;}',
+            '[data-hero-mode="full-bleed"] .hero-photo::after{background:rgba(0,0,0,.48);}',
+            '[data-hero-mode="full-bleed"] .hero-content{z-index:2;max-width:820px;}',
+        ]
+    elif any(x in hero for x in ("offset", "overlap", "panel")):
+        hero_rules += [
+            '[data-hero-mode="offset"] .hero-content{padding:42px;background:var(--card);border:1px solid var(--border);}',
+            '[data-hero-mode="offset"] .hero-visual{margin-left:-55px;z-index:2;}',
+        ]
+
+    if "serif" in typography or "editorial" in typography:
+        type_rule=".design-typography h1,.design-typography h2,.design-typography h3{font-family:Georgia,'Times New Roman',serif;letter-spacing:-.035em;}"
+    else:
+        type_rule=".design-typography h1,.design-typography h2,.design-typography h3{font-family:Inter,Arial,Helvetica,sans-serif;}"
+
+    if "flat" in cards or "1px border" in cards:
+        card_rule=".design-cards .service-card,.design-cards .benefit-card,.design-cards .process-card,.design-cards details{border-radius:6px;box-shadow:none;}"
+    elif "shadow" in cards:
+        card_rule=".design-cards .service-card,.design-cards .benefit-card,.design-cards .process-card{box-shadow:0 24px 60px rgba(0,0,0,.18);}"
+    else:
+        card_rule=""
+
+    radius="4px" if "4px" in buttons else "999px" if "pill" in buttons else "7px"
+    nav_rule=".design-nav .header{position:sticky;top:0;}" if "sticky" in navigation else ".design-nav .header{position:relative;}"
+
+    return "\n".join([
+        "/* AI Design Renderer */",
+        f"body.design-renderer .button{{border-radius:{radius};}}",
+        nav_rule,
+        *order_rules,
+        *hero_rules,
+        type_rule,
+        card_rule,
+    ])
+
+def build_html(business, copy, niche, output_dir, handoff=None):
     name = get_business_name(business, {})
 
     phone = business.get("phone", "")
     address = business.get("address", "")
     website = business.get("website", "")
+    verified_services = get_verified_services(business, handoff or {})
 
     image_queries = copy.get("image_queries", [])
     if not isinstance(image_queries, list):
@@ -851,8 +1270,21 @@ def build_html(business, copy, niche, handoff=None):
     image_alt = [str(x).strip() for x in image_alt if str(x).strip()]
     image_alt = (image_alt + [f"Professional {niche} service", f"Local {niche} business"])[:2]
 
-    hero_image = stock_image_url(image_queries[0])
-    secondary_image = stock_image_url(image_queries[1])
+    images_dir = Path(output_dir) / "images"
+
+    hero_image = download_stock_image(
+        image_queries[0],
+        images_dir,
+        "hero",
+    )
+    secondary_image = download_stock_image(
+        image_queries[1],
+        images_dir,
+        "secondary",
+    )
+
+    hero_image = f"images/{hero_image}"
+    secondary_image = f"images/{secondary_image}"
 
     niche_label = escape(str(niche)).upper()
     niche_title = escape(str(niche))
@@ -887,9 +1319,9 @@ def build_html(business, copy, niche, handoff=None):
         "",
     )
 
-    services = copy.get(
-        "services",
-        [],
+    services = filter_services(
+        copy.get("services", []),
+        verified_services,
     )
 
     benefits = copy.get(
@@ -920,6 +1352,39 @@ def build_html(business, copy, niche, handoff=None):
     cta_text = copy.get(
         "cta_text",
         "",
+    )
+
+    seo = copy.get("seo", {})
+    seo_title = str(
+        seo.get("title")
+        or f"{name} | {niche}"
+    ).strip()
+    meta_description = str(
+        seo.get("meta_description")
+        or subheadline
+        or intro
+    ).strip()
+    primary_keyword = str(
+        seo.get("primary_keyword") or niche
+    ).strip()
+
+    design = copy.get("design_spec", {})
+    direction = str(design.get("direction", "Clean Professional")).strip().lower()
+    mode_map = {
+        "premium dark": "premium-dark",
+        "clean professional": "clean-professional",
+        "bold local business": "bold-local",
+        "luxury editorial": "luxury-editorial",
+        "modern corporate": "modern-corporate",
+        "minimal conversion": "minimal-conversion",
+        "experimental editorial": "experimental-editorial",
+    }
+    design_mode = next((v for k, v in mode_map.items() if k in direction), "clean-professional")
+    hero_text = str(design.get("hero_style", "")).lower()
+    hero_mode = (
+        "full-bleed" if any(x in hero_text for x in ("full-bleed", "full width", "background image"))
+        else "offset" if any(x in hero_text for x in ("offset", "overlap", "panel"))
+        else "standard"
     )
 
     phone_html = phone_link(phone)
@@ -961,7 +1426,7 @@ def build_html(business, copy, niche, handoff=None):
             """
 
     if not services_html:
-        services_html = """
+        services_html = f"""
         <article class="service-card">
             <span class="service-number">01</span>
 
@@ -981,16 +1446,27 @@ def build_html(business, copy, niche, handoff=None):
         benefits[:4],
         1,
     ):
-        if benefit:
+        if isinstance(benefit, dict):
+            benefit_title = benefit.get("title") or benefit.get("name") or ""
+            benefit_text = benefit.get("text") or benefit.get("description") or ""
+        else:
+            benefit_title = str(benefit).strip() if benefit else ""
+            benefit_text = ""
+
+        if benefit_title:
             benefits_html += f"""
             <article class="benefit-card">
                 <span class="benefit-number">
                     {index:02d}
                 </span>
 
-                <h3>
-                    {escape(str(benefit))}
-                </h3>
+                <div>
+                    <h3>
+                        {escape(str(benefit_title))}
+                    </h3>
+
+                    {f'<p>{escape(str(benefit_text))}</p>' if benefit_text else ''}
+                </div>
             </article>
             """
 
@@ -1103,13 +1579,42 @@ def build_html(business, copy, niche, handoff=None):
 >
 
 <title>
-    {escape(str(name))} | {niche_title}
+    {escape(seo_title)}
 </title>
 
 <meta
     name="description"
-    content="{escape(str(subheadline))}"
+    content="{escape(meta_description)}"
 >
+
+<meta
+    name="robots"
+    content="noindex,follow"
+>
+
+<meta
+    property="og:title"
+    content="{escape(seo_title)}"
+>
+
+<meta
+    property="og:description"
+    content="{escape(meta_description)}"
+>
+
+<script type="application/ld+json">
+{json.dumps({
+    "@context": "https://schema.org",
+    "@type": "LocalBusiness",
+    "name": str(name),
+    "telephone": str(phone) if phone else None,
+    "address": {
+        "@type": "PostalAddress",
+        "streetAddress": str(address) if address else None,
+    } if address else None,
+    "url": str(website) if website else None,
+}, ensure_ascii=False, separators=(",", ":"))}
+</script>
 
 <link
     rel="stylesheet"
@@ -1119,8 +1624,7 @@ def build_html(business, copy, niche, handoff=None):
 </head>
 
 
-<body>
-
+<body class="design-renderer design-{design_mode} design-nav design-typography design-cards">
 
 <header class="header">
 
@@ -1148,10 +1652,10 @@ def build_html(business, copy, niche, handoff=None):
 </header>
 
 
-<main>
+<main class="rendered-main">
 
 
-<section class="hero">
+<section data-section="hero" data-hero-mode="{hero_mode}" class="hero">
 
     <div class="hero-pattern"></div>
 
@@ -1218,7 +1722,7 @@ def build_html(business, copy, niche, handoff=None):
 </section>
 
 
-<section class="intro-section">
+<section data-section="intro" class="intro-section">
 
     <div class="container intro-grid">
 
@@ -1247,7 +1751,7 @@ def build_html(business, copy, niche, handoff=None):
 </section>
 
 
-<section class="image-feature-section">
+<section data-section="image feature" class="image-feature-section">
 
     <div class="container image-feature-grid">
 
@@ -1270,7 +1774,7 @@ def build_html(business, copy, niche, handoff=None):
                 loading="lazy"
             >
             <figcaption>
-                Stock photography selected for the {niche_title} niche.
+                Professional {niche_title} photography.
             </figcaption>
         </figure>
 
@@ -1281,6 +1785,7 @@ def build_html(business, copy, niche, handoff=None):
 
 <section
     id="services"
+    data-section="services"
     class="section"
 >
 
@@ -1313,6 +1818,7 @@ def build_html(business, copy, niche, handoff=None):
 
 <section
     id="about"
+    data-section="about"
     class="section dark"
 >
 
@@ -1343,7 +1849,7 @@ def build_html(business, copy, niche, handoff=None):
 </section>
 
 
-<section class="section">
+<section data-section="benefits" class="section">
 
     <div class="container">
 
@@ -1354,7 +1860,7 @@ def build_html(business, copy, niche, handoff=None):
             </span>
 
             <h2>
-                A Cleaner Space Starts Here
+                Service Built Around Your Needs
             </h2>
 
         </div>
@@ -1370,6 +1876,7 @@ def build_html(business, copy, niche, handoff=None):
 
 <section
     id="process"
+    data-section="process"
     class="section process-section"
 >
 
@@ -1382,7 +1889,7 @@ def build_html(business, copy, niche, handoff=None):
             </span>
 
             <h2>
-                Simple Steps. Less Clutter.
+                Simple Steps. Clear Process.
             </h2>
 
         </div>
@@ -1396,7 +1903,7 @@ def build_html(business, copy, niche, handoff=None):
 </section>
 
 
-<section class="local-section">
+<section data-section="local" class="local-section">
 
     <div class="container local-grid">
 
@@ -1431,6 +1938,7 @@ def build_html(business, copy, niche, handoff=None):
     f'''
 <section
     id="faq"
+    data-section="faq"
     class="section faq-section"
 >
 
@@ -1463,6 +1971,7 @@ def build_html(business, copy, niche, handoff=None):
 
 <section
     id="contact"
+    data-section="cta"
     class="cta-section"
 >
 
@@ -1540,18 +2049,12 @@ def generate_website(handoff_path):
 
     handoff = load_json(handoff_path)
 
-    business_path = (
-        handoff_path.parent / "business.json"
-    )
+    business_path = handoff_path.parent / "business.json"
 
     if not business_path.exists():
-        raise RuntimeError(
-            "business.json not found."
-        )
+        raise RuntimeError("business.json not found.")
 
-    business = load_json(
-        business_path
-    )
+    business = load_json(business_path)
 
     niche = get_niche(business, handoff)
 
@@ -1560,19 +2063,48 @@ def generate_website(handoff_path):
         handoff,
     )
 
+    output_dir = handoff_path.parent / "website"
+    output_dir.mkdir(exist_ok=True)
+
+    design = copy.get("design_spec", {})
+    design_path = output_dir / "design_spec.json"
+
+    design_path.write_text(
+        json.dumps(
+            design,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    colors = design.get("color_direction", {})
+
+    primary = str(colors.get("primary", "#07111f"))
+    accent = str(colors.get("accent", "#d7b56d"))
+    background = str(colors.get("background", "#0d1b2e"))
+    text_color = str(colors.get("text", "#f7f9fc"))
+
+    design_css = f"""
+/* AI Design Spec */
+:root {{
+    --bg: {primary};
+    --bg-soft: {background};
+    --card: {primary};
+    --text: {text_color};
+    --gold: {accent};
+    --gold-light: {accent};
+}}
+"""
+
+    final_css = CSS + design_css + build_design_css(design)
+
     html = build_html(
         business,
         copy,
         niche,
+        output_dir,
         handoff,
-    )
-
-    output_dir = (
-        handoff_path.parent / "website"
-    )
-
-    output_dir.mkdir(
-        exist_ok=True
     )
 
     (output_dir / "index.html").write_text(
@@ -1581,7 +2113,7 @@ def generate_website(handoff_path):
     )
 
     (output_dir / "styles.css").write_text(
-        CSS,
+        final_css,
         encoding="utf-8",
     )
 
@@ -1622,9 +2154,28 @@ Recommended widgets:
 - Google Maps when appropriate
 
 Do not add unsupported business claims.
+
+Images are generated as local files in `images/` for the concept build.
 """,
         encoding="utf-8",
     )
+
+    print(
+        f"[design] Direction: "
+        f"{design.get('direction', 'Clean Professional')}"
+    )
+
+    print(
+        f"[design] Layout: "
+        f"{design.get('layout_style', 'Standard Elementor layout')}"
+    )
+
+    print(
+        f"[design] Elementor notes: "
+        f"{design.get('elementor_notes', [])}"
+    )
+    print(f"[seo] Title: {copy.get('seo', {}).get('title', '')}")
+    print(f"[seo] Primary keyword: {copy.get('seo', {}).get('primary_keyword', '')}")
 
     return output_dir
 
